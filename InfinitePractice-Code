@@ -1,0 +1,363 @@
+import React, { useState } from 'react';
+
+const QUESTION_TYPES = [
+  { label: 'Multiple Choice', value: 'mcq' },
+  { label: 'Fill-in-the-Blank', value: 'fib' },
+  { label: 'Short Answer', value: 'short' },
+  { label: 'Mixed', value: 'mixed' },
+];
+
+function buildPrompt({text, type, num}) {
+  let typeInstruction = '';
+  if (type === 'mcq')
+    typeInstruction = 'multiple-choice';
+  else if (type === 'fib')
+    typeInstruction = 'fill-in-the-blank';
+  else if (type === 'short')
+    typeInstruction = 'short answer';
+  else if (type === 'mixed')
+    typeInstruction = 'mixed format (randomly mixing multiple-choice, fill-in-the-blank, and short answer questions)';
+
+  return `You are an educational AI that creates adaptive practice questions. Given the following course material, generate ${num} practice questions in ${typeInstruction} format.
+
+For each question, provide:
+- "type": (mcq, fill-in-the-blank, or short answer)
+- "question": The question text
+- For MCQ: "choices": A list of four options (A, B, C, D)
+- "answer": The correct answer (for MCQ: letter; for fill-in-the-blank or short answer: a phrase)
+- "explanation": A brief explanation (1-2 sentences) of why this is the correct answer
+
+Output as a JSON array, one object per question.
+
+Text:
+${text}`;
+}
+
+function parseQuestions(responseText) {
+  let match = responseText.match(/\[.*\]/s);
+  if (!match) return null;
+  try {
+    const arr = JSON.parse(match[0]);
+    return arr;
+  } catch (e) {
+    return null;
+  }
+}
+
+function userAnswerCorrect(q, answer) {
+  if (q.type === 'mcq') {
+    return answer && answer.toUpperCase() === q.answer.toUpperCase();
+  }
+  return answer && answer.trim().toLowerCase() === String(q.answer).trim().toLowerCase();
+}
+
+function QuestionCard({ q, idx, onAnswer, userAnswer }) {
+  // For MCQ, only highlight as needed
+  return (
+    <div style={{
+      background: '#fff',
+      borderRadius: 12,
+      padding: 24,
+      margin: '20px 0',
+      boxShadow: '0 2px 12px #e5e7eb',
+      minWidth: 320,
+      maxWidth: 600
+    }}>
+      <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 14 }}>{q.question}</div>
+      {q.type === 'mcq' && (
+        <div style={{ margin: '18px 0', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {q.choices.map((c, i) => {
+            const letter = c[0];
+            let bg = '#f1f5f9', color = '#232940', fontWeight = 500;
+            // Only highlight the chosen/wrong/correct answer if user has answered
+            if (userAnswer) {
+              if (userAnswer === q.answer && letter === userAnswer) {
+                // User chose correctly: highlight only this green
+                bg = '#22c55e'; color = '#fff'; fontWeight = 700;
+              } else if (userAnswer !== q.answer) {
+                if (letter === userAnswer) {
+                  // User's wrong choice: red
+                  bg = '#ef4444'; color = '#fff'; fontWeight = 700;
+                } else if (letter === q.answer) {
+                  // Correct answer (if missed): green
+                  bg = '#22c55e'; color = '#fff'; fontWeight = 700;
+                }
+              }
+            }
+            return (
+              <button
+                key={i}
+                disabled={!!userAnswer}
+                style={{
+                  background: bg,
+                  color,
+                  fontWeight,
+                  border: 'none',
+                  borderRadius: 8,
+                  fontSize: 19,
+                  padding: '15px 0',
+                  cursor: userAnswer ? 'not-allowed' : 'pointer',
+                  transition: 'all 0.15s',
+                  outline: 'none'
+                }}
+                onClick={() => onAnswer(letter)}
+              >
+                {c}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {(q.type === 'fib' || q.type === 'fill-in-the-blank' || q.type === 'short' || q.type === 'short answer') && !userAnswer && (
+        <div style={{ margin: '18px 0' }}>
+          <input
+            type="text"
+            placeholder="Your answer"
+            style={{
+              fontSize: 18,
+              padding: 10,
+              width: '70%',
+              borderRadius: 7,
+              border: '1px solid #cbd5e1',
+              background: '#f8fafc',
+            }}
+            onKeyDown={e => { if (e.key === 'Enter') onAnswer(e.target.value); }}
+            autoFocus
+          />
+          <button
+            style={{
+              marginLeft: 12,
+              padding: '10px 22px',
+              fontSize: 17,
+              background: '#2563eb',
+              color: 'white',
+              border: 'none',
+              borderRadius: 8,
+              fontWeight: 600,
+              cursor: 'pointer'
+            }}
+            onClick={e => {
+              const input = e.target.parentElement.querySelector('input');
+              onAnswer(input.value);
+            }}
+          >Submit</button>
+        </div>
+      )}
+      {userAnswer && (
+        <div style={{
+          marginTop: 14,
+          color: userAnswerCorrect(q, userAnswer) ? '#22c55e' : '#ef4444',
+          fontWeight: 600,
+          fontSize: 17
+        }}>
+          {userAnswerCorrect(q, userAnswer)
+            ? 'Correct!'
+            : <>Incorrect. Correct: <b>{q.answer}</b></>}
+          <div style={{ color: '#64748b', marginTop: 6, fontWeight: 400, fontSize: 16 }}>
+            {q.explanation}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function App() {
+  const [apiKey, setApiKey] = useState('');
+  const [text, setText] = useState('');
+  const [type, setType] = useState('mcq');
+  const [num, setNum] = useState(10);
+  const [questions, setQuestions] = useState([]);
+  const [answers, setAnswers] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleGenerate() {
+    setQuestions([]);
+    setAnswers({});
+    setLoading(true);
+    setError('');
+    try {
+      const prompt = buildPrompt({text, type, num});
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.5,
+        }),
+      });
+      const data = await res.json();
+      if (!data.choices || !data.choices[0].message.content) throw new Error('No response');
+      const parsed = parseQuestions(data.choices[0].message.content);
+      if (!parsed) throw new Error('Failed to parse questions from AI response');
+      setQuestions(parsed);
+    } catch (e) {
+      setError('Failed to generate questions. Check your API key and input. Error: ' + e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleAnswer(idx, ans) {
+    setAnswers(a => ({ ...a, [idx]: ans }));
+  }
+
+  // Progress
+  const numAnswered = Object.keys(answers).length;
+  const numCorrect = questions.filter((q, i) => answers[i] && userAnswerCorrect(q, answers[i])).length;
+
+  return (
+    <div style={{
+      minHeight: '100vh',
+      background: '#f8fafc',
+      padding: '32px 0',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center'
+    }}>
+      <div style={{
+        background: '#fff',
+        padding: 24,
+        borderRadius: 14,
+        boxShadow: '0 2px 18px #e0e7ef',
+        marginBottom: 32,
+        maxWidth: 660,
+        width: '97%'
+      }}>
+        <h2 style={{ fontSize: 28, margin: 0, color: '#1e293b', fontWeight: 700 }}>
+          AI Unlimited Practice Question Generator
+        </h2>
+        <div style={{marginTop:18,marginBottom:10}}>
+          <label style={{fontWeight:600,color:'#334155'}}>OpenAI API Key:</label><br/>
+          <input
+            type="password"
+            placeholder="sk-..."
+            value={apiKey}
+            onChange={e => setApiKey(e.target.value)}
+            style={{
+              width: '100%',
+              fontSize: 17,
+              border: '1px solid #cbd5e1',
+              borderRadius: 8,
+              padding: 10,
+              marginTop: 3,
+              marginBottom: 8,
+              background: '#f8fafc',
+            }}
+            autoComplete="off"
+          />
+        </div>
+        <div style={{marginTop:14,marginBottom:10}}>
+          <label style={{fontWeight:600,color:'#334155'}}>Paste or Upload Class Notes:</label><br/>
+          <textarea
+            placeholder="Paste class notes or textbook excerpt here..."
+            value={text}
+            onChange={e => setText(e.target.value)}
+            style={{
+              width: '100%',
+              minHeight: 90,
+              fontSize: 17,
+              padding: 12,
+              border: '1px solid #cbd5e1',
+              borderRadius: 8,
+              marginTop: 4,
+              background: '#f8fafc',
+              resize: 'vertical'
+            }}
+          />
+        </div>
+        <div style={{margin:'18px 0 14px',display:'flex',alignItems:'center',gap:22}}>
+          <label style={{fontWeight:600,color:'#334155'}}>Question type:</label>
+          {QUESTION_TYPES.map(opt => (
+            <label key={opt.value} style={{marginRight:10}}>
+              <input
+                type="radio"
+                name="qtype"
+                value={opt.value}
+                checked={type === opt.value}
+                onChange={() => setType(opt.value)}
+                style={{marginRight:6}}
+              />
+              {opt.label}
+            </label>
+          ))}
+        </div>
+        <div style={{marginBottom:18,display:'flex',alignItems:'center',gap:20}}>
+          <label style={{fontWeight:600,color:'#334155'}}>Number of questions:</label>
+          <input
+            type="range"
+            min={1}
+            max={20}
+            value={num}
+            onChange={e => setNum(Number(e.target.value))}
+            style={{width:120,marginRight:12}}
+          />
+          <span style={{fontSize:18,fontWeight:600}}>{num}</span>
+        </div>
+        <button
+          style={{
+            marginTop: 6,
+            width: '100%',
+            padding: '13px 0',
+            fontSize: 20,
+            background: apiKey && text && !loading ? '#3b82f6' : '#cbd5e1',
+            color: apiKey && text && !loading ? '#fff' : '#64748b',
+            border: 'none',
+            borderRadius: 8,
+            fontWeight: 'bold',
+            cursor: apiKey && text && !loading ? 'pointer' : 'not-allowed',
+            boxShadow: '0 1px 5px #e0e7ef',
+            transition: 'background 0.2s'
+          }}
+          onClick={handleGenerate}
+          disabled={!apiKey || !text || loading}
+        >
+          {loading ? 'Generating...' : `Generate ${num} Questions`}
+        </button>
+        {error && <div style={{ color: '#dc2626', marginTop: 18, fontWeight: 500 }}>{error}</div>}
+      </div>
+
+      {questions.length > 0 && (
+        <div style={{
+          background: '#fff',
+          borderRadius: 14,
+          padding: 24,
+          boxShadow: '0 2px 16px #e0e7ef',
+          maxWidth: 660,
+          width: '97%'
+        }}>
+          <div style={{ marginBottom: 18, fontSize: 19, fontWeight: 600 }}>
+            <span style={{color:'#222'}}>Progress:</span> {numAnswered}/{questions.length} answered,
+            <span style={{ color: '#22c55e', marginLeft:10 }}>{numCorrect} correct</span>
+            <div style={{
+              marginTop: 6,
+              background: '#2563eb',
+              height: 12,
+              borderRadius: 7,
+              width: `${(numAnswered / questions.length) * 100}%`,
+              transition: 'width 0.3s'
+            }} />
+          </div>
+          {questions.map((q, i) => (
+            <QuestionCard
+              key={i}
+              q={q}
+              idx={i}
+              onAnswer={ans => handleAnswer(i, ans)}
+              userAnswer={answers[i]}
+            />
+          ))}
+        </div>
+      )}
+
+      <div style={{ marginTop: 50, color: '#64748b', fontSize: 15 }}>
+        <i>This demo uses your API key and GPT-4o to generate live, adaptive practice questions.<br />Your key is only used in your browser and not stored anywhere.</i>
+      </div>
+    </div>
+  );
+}
