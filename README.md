@@ -8,9 +8,4 @@ A React-based web app that uses AI (GPT-4o) to generate adaptive practice questi
 
 ## How to Run
 
-1. Clone this repo
-2. Run `npm install` in the folder
-3. Run `npm start`
-4. Open [http://localhost:3000](http://localhost:3000)
-
-**You must supply your own OpenAI API key to use the app.**
+I simply copy/pasted the code to codesandbox.io to run it myself, but I am not familiar with the CS/Software Engineering Skills needed for best practices or to share it.
